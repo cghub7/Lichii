@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -175,6 +176,52 @@ public:
     /// of it was still queued.
     bool WaitForSync();
 
+    /// Front: work that writes guest memory in a range the front does not know was just sent
+    /// (KeplerMemory and Fermi2D methods, 3D methods off the front). Ends every macro DMA read
+    /// snapshot (Maxwell3D::FrontDmaRead).
+    void NoteUnrangedWriter() {
+        last_unranged_position = write_position;
+    }
+    /// Front: work that writes device bytes [begin, begin + size) was just sent (a report, an
+    /// inline upload, a constant buffer upload, a semaphore release).
+    void NoteMemoryWrite(u64 begin, u64 size) {
+        PendingWrite& write = pending_writes[pending_write_count++ % pending_writes.size()];
+        write.begin = begin;
+        write.end = begin + size;
+        write.position = write_position;
+    }
+    /// The ring position of everything sent so far.
+    [[nodiscard]] u64 SentPosition() const {
+        return write_position;
+    }
+    [[nodiscard]] u64 LastWriterPosition() const {
+        return last_writer_position;
+    }
+    [[nodiscard]] u64 LastUnrangedPosition() const {
+        return last_unranged_position;
+    }
+    /// Whether work sent after position `since` may write device bytes [begin, begin + size):
+    /// compute or copies (any range), unranged writers, or a noted write that overlaps the range.
+    /// Also true when more writes were noted since than are remembered.
+    [[nodiscard]] bool MayBeWrittenSince(u64 since, u64 begin, u64 size) const {
+        if (last_writer_position > since || last_unranged_position > since) {
+            return true;
+        }
+        const u64 end = begin + size;
+        const u64 remembered = (std::min<u64>)(pending_write_count, pending_writes.size());
+        for (u64 scanned = 0; scanned < remembered; ++scanned) {
+            const PendingWrite& write =
+                pending_writes[(pending_write_count - 1 - scanned) % pending_writes.size()];
+            if (write.position <= since) {
+                return false;
+            }
+            if (write.begin < end && begin < write.end) {
+                return true;
+            }
+        }
+        return remembered == pending_writes.size();
+    }
+
 private:
     friend struct GpuSplitTestAccess;
 
@@ -247,6 +294,15 @@ private:
     u64 write_position{};
     u64 last_writer_position{};
     u64 last_sync_position{};
+    u64 last_unranged_position{};
+    /// The front's noted writes (NoteMemoryWrite), newest last, for MayBeWrittenSince.
+    struct PendingWrite {
+        u64 begin;
+        u64 end;
+        u64 position;
+    };
+    std::array<PendingWrite, 256> pending_writes{};
+    u64 pending_write_count{};
     u64 published_local{};
     u64 consumed_cache{};
     /// Words between publishes: small right after a drain, while the back has nothing to do.

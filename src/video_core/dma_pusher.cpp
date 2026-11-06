@@ -472,9 +472,16 @@ void DmaPusher::CallMethod(u32 argument) {
         const auto engine_type = subchannel_type[dma_state.subchannel];
         const bool writer = split.Active() &&
                             IsMemoryWriter(*subchannel, engine_type, dma_state.method);
+        // Inline-to-memory and 2D blits write ranges the front does not note (macro DMA read
+        // snapshots, Maxwell3D::FrontDmaRead).
+        const bool unranged_writer = split.Active() && !writer &&
+                                     (engine_type == Engines::EngineTypes::KeplerMemory ||
+                                      engine_type == Engines::EngineTypes::Fermi2D);
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
+            } else if (unranged_writer) {
+                split.NoteUnrangedWriter();
             }
         };
         if (split.Active()) {
@@ -499,6 +506,10 @@ void DmaPusher::CallMethod(u32 argument) {
             }
             split.Method(subchannel, dma_state.method, argument, dma_state.is_last_call,
                          WantsSegment() ? &segment : nullptr);
+            if (engine_type == Engines::EngineTypes::Maxwell3D) {
+                // Only the front's 3D methods note the ranges they write.
+                split.NoteUnrangedWriter();
+            }
             return;
         }
         if (!subchannel->execution_mask[dma_state.method]) {
@@ -530,9 +541,16 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         const auto engine_type = subchannel_type[dma_state.subchannel];
         const bool writer = split.Active() &&
                             IsMemoryWriter(*subchannel, engine_type, dma_state.method);
+        // Inline-to-memory and 2D blits write ranges the front does not note (macro DMA read
+        // snapshots, Maxwell3D::FrontDmaRead).
+        const bool unranged_writer = split.Active() && !writer &&
+                                     (engine_type == Engines::EngineTypes::KeplerMemory ||
+                                      engine_type == Engines::EngineTypes::Fermi2D);
         SCOPE_EXIT {
             if (writer) {
                 split.NoteWriter();
+            } else if (unranged_writer) {
+                split.NoteUnrangedWriter();
             }
         };
         if (split.Active()) {
@@ -557,6 +575,9 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
             }
             split.MultiMethod(subchannel, dma_state.method, base_start, num_methods,
                               dma_state.method_count, WantsSegment() ? &segment : nullptr);
+            if (engine_type == Engines::EngineTypes::Maxwell3D) {
+                split.NoteUnrangedWriter();
+            }
             return;
         }
         VideoCommon::Nx2Profile::Scope method_scope{VideoCommon::Nx2Profile::Zone::Method};
