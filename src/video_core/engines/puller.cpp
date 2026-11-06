@@ -89,6 +89,14 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (!pending_acquire) {
         return true;
     }
+    VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquirePolls, 1);
+    // The back ran a release that met the value and latched this waiter: resume without draining
+    // it. Ocarina of Time polls each waiting acquire about 12 times before it is met, and every
+    // poll drained the back.
+    if (Nx2SemaphoreWaiters::Get().Latched(this)) {
+        VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::AcquirePollsFast, 1);
+        return true;
+    }
     // The release may still be queued for the split GPU thread's back half (and the caches
     // ReadSemaphoreWord asks are its state).
     DrainBack();
