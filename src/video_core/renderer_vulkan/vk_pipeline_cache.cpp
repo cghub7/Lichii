@@ -33,6 +33,7 @@
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/program_header.h"
+#include "video_core/nx2.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
@@ -1364,6 +1365,18 @@ void PipelineCache::EvictUnusedPipelines() {
     if (frame_count <= EvictAfterFrames) {
         return;
     }
+    // Only while the cache is large: each one evicted is translated again on the GPU thread when
+    // its place is revisited (~10 ms). Ocarina of Time kept ~1,900 of them and evicted 3,400 in
+    // 25 minutes of play, then rebuilt 1,850 (14 s of stalls, 3.8 s in one 10 s window). 8,000
+    // pipelines are ~3.6 GB of driver memory at most. EDEN_NX2_PIPELINE_EVICT_ABOVE sets it.
+    static const size_t evict_above = [] {
+        const char* value = std::getenv("EDEN_NX2_PIPELINE_EVICT_ABOVE");
+        return value != nullptr ? static_cast<size_t>(std::strtoull(value, nullptr, 10))
+                                : size_t{8000};
+    }();
+    if (graphics_cache.size() <= evict_above) {
+        return;
+    }
     const u64 cutoff = frame_count - EvictAfterFrames;
     const u64 tick = scheduler.CurrentTick();
     // ~0.9 GB of driver memory at ~0.45 MB each.
@@ -1407,8 +1420,8 @@ void PipelineCache::EvictUnusedPipelines() {
 }
 
 /// Returns `pipeline` when it is built or the current draw must wait for it, and nullptr when the
-/// draw may be skipped while it builds (asynchronous shaders; native draws only with
-/// EDEN_NX2_ASYNC_DISCARD=1). Each nullptr returned for an unbuilt pipeline is counted for the log.
+/// draw may be skipped while it builds (asynchronous shaders; native draws per native_async_draws,
+/// Ocarina of Time skipping by default, or EDEN_NX2_ASYNC_DISCARD). Each nullptr returned for an unbuilt pipeline is counted for the log.
 GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexcept {
     if (pipeline->IsBuilt()) {
         return pipeline;
@@ -1416,16 +1429,16 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexc
     if (!use_asynchronous_shaders) {
         return pipeline;
     }
-    // EDEN_NX2_ASYNC_DISCARD=1: skip native draws whose pipeline is still building instead of
-    // waiting for it (experimental; the draw may be missing for a frame or more).
-    /// Reads EDEN_NX2_ASYNC_DISCARD once and logs when it is on.
-    static const bool discard_native = [] {
+    // EDEN_NX2_ASYNC_DISCARD=1 skips native draws whose pipeline is still building, =0 waits for
+    // every pipeline; unset, native_async_draws decides.
+    static const int discard_env = [] {
         const char* value = std::getenv("EDEN_NX2_ASYNC_DISCARD");
-        const bool enabled = value != nullptr && value[0] == '1';
-        if (enabled) {
-            LOG_INFO(Render_Vulkan, "EDEN_NX2_ASYNC_DISCARD: native draws skip unbuilt pipelines");
+        const int env = value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
+        if (env >= 0) {
+            LOG_INFO(Render_Vulkan, "EDEN_NX2_ASYNC_DISCARD: native draws {} unbuilt pipelines",
+                     env != 0 ? "skip" : "wait for");
         }
-        return enabled;
+        return env;
     }();
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
@@ -1442,7 +1455,15 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexc
         default:
             break;
         }
-        if (discard_native) {
+        if (discard_env >= 0) {
+            mode = discard_env != 0 ? NativePendingMode::Skip : NativePendingMode::Wait;
+        } else if (mode == NativePendingMode::Wait &&
+                   Tegra::g_nx2_program_id.load(std::memory_order_relaxed) ==
+                       Tegra::OcarinaOfTimeProgramId) {
+            // Ocarina of Time skips by default (Frizti): the object is missing for a frame or
+            // more rather than the game freezing while the driver compiles (7.5 s of waits in a
+            // 25 min session). Full-screen passes (no depth, few vertices) still wait, so a
+            // lighting or post pass is never dropped.
             mode = NativePendingMode::Skip;
         }
     }
