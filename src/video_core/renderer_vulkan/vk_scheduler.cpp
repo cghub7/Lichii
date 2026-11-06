@@ -25,6 +25,7 @@
 #include "common/dkb_cpu_trace.h"
 #include "common/thread.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/renderer_vulkan/vk_command_pool.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
@@ -185,13 +186,18 @@ bool Scheduler::DeferFlush() {
     // kept the Vulkan worker busy submitting. Batched within 500 us: ~10-15% more fps there.
     // Command list copies after dispatches were ~9,000 more a second, of which the front waited
     // for about 5%.
-    static const s64 interval_us = [] {
+    static const s64 env_interval_us = [] {
         const char* value = std::getenv("EDEN_NX2_FENCE_FLUSH_US");
-        if (value != nullptr) {
-            return static_cast<s64>(std::atoll(value));
-        }
-        return s64{500};
+        return value != nullptr ? (std::max)(static_cast<s64>(std::atoll(value)), s64{0}) : s64{-1};
     }();
+    // Ocarina of Time: 0 by default (EvilOOT's flash fix). With preflush the 500 us batch made
+    // its whole screen flash white (sword boulder: 31 flashes in 30 s, 0 without), and Lake Hylia
+    // ran faster without it (52.3 -> 55.4 fps). EDEN_NX2_FENCE_FLUSH_US=500 restores it.
+    const s64 interval_us =
+        env_interval_us >= 0 ? env_interval_us
+        : Tegra::g_nx2_program_id.load(std::memory_order_relaxed) == Tegra::OcarinaOfTimeProgramId
+            ? s64{0}
+            : s64{500};
     if (interval_us <= 0 || !VideoCommon::GpuSplit::OnBackThread() ||
         std::chrono::steady_clock::now() - last_flush >= std::chrono::microseconds{interval_us}) {
         return false;

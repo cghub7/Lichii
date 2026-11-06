@@ -1059,12 +1059,12 @@ struct Maxwell3D::FrontState {
 
 namespace {
 
-// EDEN_NX2_DMA_SNAPSHOT: 0 off, 9 on (default), 10 on and every skipped read checked against the
-// drained path.
+// EDEN_NX2_DMA_SNAPSHOT: 0 off, 9 on (default: Lake Hylia 46.5 -> 52.3 fps; verify found 0
+// differences in 235k reads), 10 on and every skipped read checked against the drained path.
 int DmaSnapshotMode() {
     static const int mode = [] {
         const char* const value = std::getenv("EDEN_NX2_DMA_SNAPSHOT");
-        return value == nullptr ? 0 : std::atoi(value);
+        return value == nullptr ? 9 : std::atoi(value);
     }();
     return mode;
 }

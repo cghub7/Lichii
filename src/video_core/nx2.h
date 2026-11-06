@@ -21,6 +21,10 @@ namespace Tegra {
 // Ampere classes and the Turing+ macro ISA, which Eden's Maxwell engines don't implement.
 inline std::atomic<bool> g_nx2_ampere{false};
 
+// The program id of the process the GPU channels were last initialised for (GPU::InitChannel).
+inline std::atomic<u64> g_nx2_program_id{0};
+inline constexpr u64 OcarinaOfTimeProgramId = 0x0400486024DEC000ULL;
+
 // GPU VA that nx2:gpu GetVaRange and GetUserPartition report to NVN. The in-process
 // allocator hands out addresses in [Nx2GpuVaStart, Nx2GpuVaEnd). NvRm's AllocAsEx range
 // can be smaller; the GMMU page tables still have to cover this one.
