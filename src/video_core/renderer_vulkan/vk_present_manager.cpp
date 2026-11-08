@@ -443,7 +443,6 @@ bool PresentManager::PaceFrame(Frame* frame, std::stop_token token) {
         if (target <= start || target - start >= pacer.RefreshPeriod()) {
             return false;
         }
-        Common::Nx2Timeline::Span span{"present: host pacing hold"};
         for (auto now = start; now < target && !token.stop_requested(); now = Clock::now()) {
             const auto left = target - now;
             if (left > std::chrono::microseconds{1500}) {
